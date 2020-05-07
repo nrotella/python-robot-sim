@@ -31,7 +31,6 @@ class GroundGraphics(object):
             (None)
 
         """
-
         # Store the grid dimensions and compute number of squares and vertices
         self.len = length
         self.w = width
@@ -66,6 +65,7 @@ class GroundGraphics(object):
         self.vert_stride = 12 # number of bytes between successive vertices
         self.vert_vbo = vbo.VBO(np.reshape(self.vert, (1,-1), order='C').astype(np.float32))
 
+        
     def render(self):
         """ Renders the ground plane graphics object.
 
@@ -79,8 +79,6 @@ class GroundGraphics(object):
             (None)
 
         """
-
-
         gl.glPushMatrix()
 
         try:
@@ -115,6 +113,7 @@ class GroundGraphics(object):
 
             gl.glPopMatrix()
 
+            
 class VectorGraphics(object):
     """
     Class for rendering a three-dimensional vector.
@@ -155,12 +154,13 @@ class VectorGraphics(object):
             GLU.gluCylinder(self.quadric, 2.0*width, 0.0, 0.1*length, 100, 10)
             gl.glPopMatrix()
 
+            
 class AxesGraphics(object):
     """
     Class for rendering an axes (frame vectors) object.
 
     """
-
+    
     def __init__(self):
         self.x_axis = VectorGraphics()
         self.y_axis = VectorGraphics()
@@ -194,13 +194,13 @@ class GLWidget(QtOpenGL.QGLWidget):
             (None)
 
         """
-
         # Store reference to and initialize the parent class
         self.parent = parent
         QtOpenGL.QGLWidget.__init__(self, parent)
 
         # Initialize geometry if necessary
         self.initGeometry()
+
         
     def initializeGL(self):
         """ Initializes OpenGL functionality and geometry.
@@ -215,7 +215,6 @@ class GLWidget(QtOpenGL.QGLWidget):
             (None)
 
         """
-
         # Convenience function, calls glClearColor under the hood.
         # QColor is specified as RGB ints (0-255).  Specify this clear
         # color once and call glClear(GL_COLOR_BUFFER_BIT) before each
@@ -244,6 +243,7 @@ class GLWidget(QtOpenGL.QGLWidget):
         # Set focus to the window
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
 
+        
     def keyPressEvent(self, event):
         """ Defines callbacks for keypress events.
 
@@ -258,7 +258,6 @@ class GLWidget(QtOpenGL.QGLWidget):
             (None)
 
         """
-        
         if type(event) == QtGui.QKeyEvent:
             if event.key() == QtCore.Qt.Key_W:
                 # Hold W to decrease radius (zoom in)
@@ -290,6 +289,7 @@ class GLWidget(QtOpenGL.QGLWidget):
                 self.eye_th -= 0.05
                 self.update_view()
 
+                
     def update_view(self):
         """ Updates the camera view using current camera state.
 
@@ -304,13 +304,13 @@ class GLWidget(QtOpenGL.QGLWidget):
             (None)
 
         """
-
         self.eye_pos = np.array([self.eye_r*np.sin(self.eye_phi)*np.cos(self.eye_th),
                                  self.eye_r*np.sin(self.eye_phi)*np.sin(self.eye_th),
                                  self.eye_r*np.cos(self.eye_phi)])
         up_vec = np.array([0.0, 0.0, 1.0])
         gl.glLoadIdentity()
         GLU.gluLookAt(*np.concatenate((self.eye_pos, self.center_pos, up_vec)))
+
         
     def resizeGL(self, width, height):
         """ Defines behavior of OpenGL window when resized.
@@ -327,7 +327,6 @@ class GLWidget(QtOpenGL.QGLWidget):
             (None)
 
         """
-
         # Create the viewport, using the full window size
         gl.glViewport(0, 0, width, height)
         gl.glMatrixMode(gl.GL_PROJECTION)
@@ -338,6 +337,7 @@ class GLWidget(QtOpenGL.QGLWidget):
         GLU.gluPerspective(45.0, aspect, 1.0, 100.0)
         gl.glMatrixMode(gl.GL_MODELVIEW)
 
+        
     def paintGL(self):
         """ Defines behavior of OpenGL window when resized.
 
@@ -351,14 +351,14 @@ class GLWidget(QtOpenGL.QGLWidget):
             (None)
 
         """
-        
         # Start from a blank slate each render by clearing buffers
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         
         self.ground_graphics.render()
         
         self.origin_axes_graphics.render(np.identity(3), np.zeros(3))
-            
+
+        
     def initGeometry(self):
         """ Initializes any geometry not encapsulated in a class. """
 
@@ -385,14 +385,13 @@ class MainWindow(QtGui.QMainWindow):
            (None)
 
         """
-
         QtGui.QMainWindow.__init__(self)    # call the init for the parent class
 
         # Set up the main window
         self.resize(1200, 1200)
         self.setWindowTitle('Python Robot Simulator')
-
         # Create the Qt OpenGL widget and initialize GUI elements for MainWindow
+
         self.glWidget = GLWidget(self)
         self.initGUI()
 
@@ -402,6 +401,7 @@ class MainWindow(QtGui.QMainWindow):
         timer.timeout.connect(self.glWidget.updateGL)
         timer.start()
 
+        
     def initGUI(self):
         """ Initialize the Qt GUI elements for the main window.
 
@@ -415,7 +415,6 @@ class MainWindow(QtGui.QMainWindow):
            (None)
 
         """
-
         # Create the central widget for the window and set its layout
         central_widget = QtGui.QWidget()
         gui_layout = QtGui.QVBoxLayout()
@@ -428,7 +427,6 @@ class MainWindow(QtGui.QMainWindow):
 
         
 if __name__ == '__main__':
-
     # Run the Qt application
     app = QtGui.QApplication(sys.argv)
 
