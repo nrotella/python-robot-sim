@@ -1,433 +1,435 @@
-from PyQt4 import QtCore      # core Qt functionality
-from PyQt4 import QtGui       # extends QtCore with GUI functionality
-from PyQt4 import QtOpenGL    # provides QGLWidget, a special OpenGL QWidget
+#!/usr/bin/env/python
 
-import OpenGL.GL as gl        # python wrapping of OpenGL
-from OpenGL import GLU        # OpenGL Utility Library, extends OpenGL functionality
+from __future__ import print_function
 
-import sys                    # we'll need this later to run our Qt application
+import copy
+import sys
+import time
+import numpy as np
 
-from OpenGL.arrays import vbo    # used to store VBO data
-import numpy as np               # general matrix/array math
+from PyQt4 import QtCore
+from PyQt4 import QtGui
+from PyQt4 import QtOpenGL
+from OpenGL import GLU
+from OpenGL.GL import *
+from OpenGL.arrays import vbo
 
+import kinematics as kin
+import dynamics as dyn
 
-class GroundGraphics(object):
-    """
-    This class defines a grid (triangular mesh) representing the ground plane. The render
-    function must be called from the main paintGL rendering function.
+from graphics_objects import GroundGraphics
+from graphics_objects import RobotGraphics
+from graphics_objects import GraphicsOptions
 
-    """
+import robot_defs
+import transformations as tf
 
-    def __init__(self, length, width):
-        """ Initialize the ground graphics object.
+import inverse_kinematics as ik
 
-        Initialize the ground graphics object.
-
-        Args:
-            length (float): Length of the ground grid, in meters.
-            width (float): Width of the ground grid, in meters.
-
-        Returns:
-            (None)
-
-        """
-        # Store the grid dimensions and compute number of squares and vertices
-        self.len = length
-        self.w = width
-        self.res = 10
-        self.n_sq = self.res**2
-        self.n_vert = 6 * self.n_sq
-
-        # Define the vertex (x,y,z) values as a grid:
-        self.vx = np.linspace(-0.5*self.len, 0.5*self.len, self.res + 1)
-        self.vy = np.linspace(-0.5*self.w, 0.5*self.w, self.res + 1)
-        self.vz = np.zeros((self.res + 1, self.res + 1))
-
-        self.vert = np.zeros((self.n_vert, 3))
-
-        # Organize the vertices into triangles for storing in a VBO:
-        sq_ind = 0
-        for i in range(self.res):
-            for j in range(self.res):
-                # Upper triangle in square:
-                self.vert[6 * sq_ind,:] = np.array([self.vx[i], self.vy[j], self.vz[i, j]])
-                self.vert[6 * sq_ind + 1,:] = np.array([self.vx[i+1], self.vy[j+1], self.vz[i+1, j+1]])
-                self.vert[6 * sq_ind + 2,:] = np.array([self.vx[i], self.vy[j+1], self.vz[i, j+1]])
-
-                # Lower triangle in square:
-                self.vert[6 * sq_ind + 3,:] = np.array([self.vx[i], self.vy[j], self.vz[i, j]])
-                self.vert[6 * sq_ind + 4,:] = np.array([self.vx[i+1], self.vy[j], self.vz[i+1, j]])
-                self.vert[6 * sq_ind + 5,:] = np.array([self.vx[i+1], self.vy[j+1], self.vz[i+1, j+1]])
-
-                sq_ind += 1
-
-        # Pack the triangle vertices into a dedicated VBO:
-        self.vert_stride = 12 # number of bytes between successive vertices
-        self.vert_vbo = vbo.VBO(np.reshape(self.vert, (1,-1), order='C').astype(np.float32))
-
-        
-    def render(self):
-        """ Renders the ground plane graphics object.
-
-        Render the ground plane graphics using the geometry defined in the constructor.
-        This function must be called from the main paintGL rendering function.
-
-        Args:
-            (None)
-
-        Returns:
-            (None)
-
-        """
-        gl.glPushMatrix()
-
-        try:
-            # Bind the vertex data buffer to the VBO all future rendering
-            # (or until unbound with 'unbind'):
-            self.vert_vbo.bind()
-
-            # Set the vertex pointer for rendering:
-            gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
-            gl.glVertexPointer(3, gl.GL_FLOAT, self.vert_stride, self.vert_vbo)
-
-            # Set the polygons to have front and back faces and to not be filled:
-            gl.glColor3f(1.0, 1.0, 1.0)
-            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
-
-            # Render triangle edges using the loaded vertex pointer data:
-            gl.glDrawArrays(gl.GL_TRIANGLES, 0, self.n_vert)
-
-            # Set the polygons to have front and back faces and to not be filled:
-            gl.glColor3f(0.5, 0.5, 0.5)
-            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
-
-            # Render triangle faces using the loaded vertex pointer data:
-            gl.glDrawArrays(gl.GL_TRIANGLES, 0, self.n_vert)
-
-        except Exception as e:
-            print(e)
-
-        finally:
-            self.vert_vbo.unbind()
-            gl.glDisableClientState(gl.GL_VERTEX_ARRAY)
-
-            gl.glPopMatrix()
-
-            
-class VectorGraphics(object):
-    """
-    Class for rendering a three-dimensional vector.
-
-    """
-
-    def __init__(self):
-        self.quadric = GLU.gluNewQuadric()
-        GLU.gluQuadricNormals(self.quadric, GLU.GLU_SMOOTH) #Create Smooth Normals
-        GLU.gluQuadricTexture(self.quadric, gl.GL_TRUE) #Create Texture Coords
-
-    def render(self, start, dir, length, width, color):
-
-        if length > 0.0:
-            # Compute the angle-axis rotation require to orient the vector along dir:
-            up_vec = np.array([0.0, 0.0, 1.0])
-            axis = np.cross(up_vec, dir)
-            trip_prod = np.linalg.det(np.dstack((up_vec, dir, axis)))
-            if trip_prod > 0:
-                angle = np.arccos(np.dot(up_vec, dir))
-            else:
-                angle = 2*np.pi - np.arccos(np.dot(up_vec, dir))
-
-            # Draw the shaft using a cylinder:
-            gl.glPushMatrix()
-            gl.glColor3f(*color)
-            gl.glTranslatef(*start)
-            gl.glRotate((180.0/np.pi)*angle, *axis)
-            GLU.gluCylinder(self.quadric, width, width, length, 100, 10)
-            gl.glPopMatrix()
-
-            # Draw the head using a cylinder having zero width on top:
-            gl.glPushMatrix()
-            gl.glColor3f(*color)
-            gl.glTranslatef(*start)
-            gl.glRotate((180.0/np.pi)*angle, *axis)
-            gl.glTranslatef(0.0, 0.0, length)
-            GLU.gluCylinder(self.quadric, 2.0*width, 0.0, 0.1*length, 100, 10)
-            gl.glPopMatrix()
-
-            
-class AxesGraphics(object):
-    """
-    Class for rendering an axes (frame vectors) object.
-
-    """
-    
-    def __init__(self):
-        self.x_axis = VectorGraphics()
-        self.y_axis = VectorGraphics()
-        self.z_axis = VectorGraphics()
-
-    def render(self, R, t):
-        self.x_axis.render(t, R[:,0],
-                           0.3, 0.01, np.array([1.0, 0.0, 0.0]))
-        self.y_axis.render(t, R[:,1],
-                           0.3, 0.01, np.array([0.0, 1.0, 0.0]))
-        self.z_axis.render(t, R[:,2],
-                           0.3, 0.01, np.array([0.0, 0.0, 1.0]))
-
-            
 class GLWidget(QtOpenGL.QGLWidget):
     """
-    This class defines the Qt OpenGL widget, which is the main object for performing all openGL
-    graphics programming.  The functions initializeGL, resizeGL, paintGL must be defined.
+    This Qt OpenGL widget is the main object for performing all openGL graphics
+    programming.  The functions initializeGL, resizeGL, paintGL must be defined.
 
     """
 
     def __init__(self, parent=None):
-        """ Initialize the Qt OpenGL Widget.
-
-        Initialize the Qt OpenGL widget.
-
-        Args:
-            (None)
-
-        Returns:
-            (None)
-
-        """
-        # Store reference to and initialize the parent class
         self.parent = parent
         QtOpenGL.QGLWidget.__init__(self, parent)
 
-        # Initialize geometry if necessary
-        self.initGeometry()
+        # Timing variables:
+        self.sim_freq = 100.0
+        self.render_freq = 30.0
 
-        
+        self.spin_time = time.time()
+        self.spin_time_prev = self.spin_time
+
+        self.render_time = time.time()
+        self.render_time_prev = self.spin_time
+
+        self.dt = 1.0 / self.sim_freq  # ideal, to be computed in loop
+
+        # Kinematics and dynamics objects:
+        self.robot = kin.RobotParams()
+        self.robot_state = kin.RobotState(self.robot)
+
+        self.sim_time = 0.0
+        self.kin = kin.Kinematics(self.robot)
+        self.kin_des = kin.Kinematics(self.robot)
+        self.dyn = dyn.RecursiveNewtonEuler(self.robot, self.robot_state, self.kin)
+
+        self.integrator_type = robot_defs.INTEGRATOR_TYPE_EULER
+
+        self.controller_type = robot_defs.CONTROLLER_TYPE_PD
+
+        self.kin.initialize(tf.HomogeneousTransform(),
+                            np.zeros(6),
+                            np.zeros(6),
+                            self.robot_state.joint_state,
+                            self.dt)
+        self.ik = ik.InverseKinematics(self.robot, self.robot_state.joint_state)
+        self.initial_endeff_pos = self.kin.h_tf_links[-1].t()
+        self.initial_endeff_ori = self.kin.h_tf_links[-1].R()
+
+        # Camera spherical coordinates:
+        self.eye_r = 3.0
+        self.eye_th = 0.3*np.pi
+        self.eye_phi = 0.5
+
+        self.eye_pos = np.array([self.eye_r*np.sin(self.eye_th)*np.cos(self.eye_phi),
+                                 self.eye_r*np.sin(self.eye_th)*np.sin(self.eye_phi),
+                                 self.eye_r*np.cos(self.eye_th)])
+        self.center_pos = np.array([0.0, 0.0, 0.0])
+
+        self.ground_graphics = GroundGraphics(length=10.0, width=10.0)
+        self.robot_graphics = RobotGraphics()
+
+        # General class for encapsulating graphics options, eg set draw
+        # in wireframe, draw joint axes etc:
+        self.graphics_options = GraphicsOptions(self.robot.n_dofs)
+
+        self.setFocusPolicy(QtCore.Qt.StrongFocus)
+
+    def keyPressEvent(self, event):
+        if type(event) == QtGui.QKeyEvent:
+            if event.key() == QtCore.Qt.Key_W:
+                self.eye_r -= 0.1
+                self.update_view()
+
+            elif event.key() == QtCore.Qt.Key_S:
+                self.eye_r += 0.1
+                self.update_view()
+
+            elif event.key() == QtCore.Qt.Key_Down:
+                self.eye_th += 0.01
+                self.update_view()
+
+            elif event.key() == QtCore.Qt.Key_Up:
+                self.eye_th -= 0.01
+                self.update_view()
+
+            elif event.key() == QtCore.Qt.Key_Left:
+                self.eye_phi -= 0.05
+                self.update_view()
+
+            elif event.key() == QtCore.Qt.Key_Right:
+                self.eye_phi += 0.05
+                self.update_view()
+
+            elif event.key() == QtCore.Qt.Key_T:
+                self.graphics_options.toggle_draw_wireframe()
+
+            elif event.key() == QtCore.Qt.Key_V:
+                self.graphics_options.toggle_draw_motion_vectors()
+
+            elif event.key() == QtCore.Qt.Key_0:
+                self.graphics_options.toggle_draw_all_joint_frames()
+
+            elif event.key() == QtCore.Qt.Key_1:
+                self.graphics_options.toggle_draw_joint_frame(1)
+
+            elif event.key() == QtCore.Qt.Key_2:
+                self.graphics_options.toggle_draw_joint_frame(2)
+
+            elif event.key() == QtCore.Qt.Key_3:
+                self.graphics_options.toggle_draw_joint_frame(3)
+
+            elif event.key() == QtCore.Qt.Key_4:
+                self.graphics_options.toggle_draw_joint_frame(4)
+
+            elif event.key() == QtCore.Qt.Key_5:
+                self.graphics_options.toggle_draw_joint_frame(5)
+
+            elif event.key() == QtCore.Qt.Key_6:
+                self.graphics_options.toggle_draw_joint_frame(6)
+
+            elif event.key() == QtCore.Qt.Key_7:
+                self.graphics_options.toggle_draw_joint_frame(7)
+
+            elif event.key() == QtCore.Qt.Key_8:
+                self.graphics_options.toggle_draw_joint_frame(8)
+
+            elif event.key() == QtCore.Qt.Key_9:
+                self.graphics_options.toggle_draw_joint_frame(9)
+
+            elif event.key() == QtCore.Qt.Key_K:
+                self.controller_type = robot_defs.CONTROLLER_TYPE_PD
+
+    def update_view(self):
+        self.eye_pos = np.array([self.eye_r*np.sin(self.eye_th)*np.cos(self.eye_phi),
+                                 self.eye_r*np.sin(self.eye_th)*np.sin(self.eye_phi),
+                                 self.eye_r*np.cos(self.eye_th)])
+        look_vec = (self.center_pos - self.eye_pos) / np.linalg.norm(self.center_pos - self.eye_pos)
+        up_vec = np.array([0.0, 0.0, 1.0])
+        right_vec = np.cross(look_vec, up_vec)
+        glLoadIdentity()
+        GLU.gluLookAt(*np.concatenate((self.eye_pos, self.center_pos, up_vec)))
+
     def initializeGL(self):
-        """ Initializes OpenGL functionality and geometry.
 
-        Virtual function provided by QGLWidget, called once at the beginning of application.
-        OpenGL and geometry initialization is performed here.
-
-        Args:
-            (None)
-
-        Returns:
-            (None)
-
-        """
         # Convenience function, calls glClearColor under the hood.
         # QColor is specified as RGB ints (0-255).  Specify this clear
         # color once and call glClear(GL_COLOR_BUFFER_BIT) before each
         # round of rendering (in paintGL):
         self.qglClearColor(QtGui.QColor(100, 100, 100)) # a grey background
-                
-        # Enable the depth buffer:
-        gl.glEnable(gl.GL_DEPTH_TEST)
 
-        # Initialize the user-specified geometry
+        # Initialize the cube vertices:
         self.initGeometry()
 
-        # Initialize the ground plane graphics geometry
-        self.ground_graphics = GroundGraphics(length=10.0, width=10.0)
+        # Enable the depth buffer:
+        glEnable(GL_DEPTH_TEST)
 
-        # Initialize the origin axes graphics geometry
-        self.origin_axes_graphics = AxesGraphics()
-        
-        # Initialize the camera state and set the initial view
-        self.eye_r = 20.0     # camera radius, in meters
-        self.eye_th = 1.0     # camera azimuth angle, in radians
-        self.eye_phi = 1.0    # camera elevation angle, in radians
-        self.center_pos = np.array([0.0, 0.0, 0.0])
+    def resizeGL(self, width, height):
+
+        # Prevent the window height from being set to zero:
+        if height == 0: height = 1
+
+        # Set the affine transform converting 'display' to 'screen' coords:.  By using
+        # the same width and height passed to the resizeGL function, we resize objects
+        # to the new window size.
+        glViewport(0, 0, width, height)
+
+        # Set the target matrix stack to the projection matrix stack:
+        glMatrixMode(GL_PROJECTION)
+
+        # Replace the current matrix on the stack with the identity (homogeneous tf):
+        glLoadIdentity()
+
+        # Set up a perspective projection matrix:
+        fov = 45.0 # field of view angle in y-direction (degrees)
+        aspect = width / float(height) # aspect ratio, determines field of view in x-direction
+        zNear = 0.1 # distance from viewer to near clipping plane (+ve)
+        zFar = 100.0 # distance from viewer to far clipping plane (+ve)
+        GLU.gluPerspective(fov, aspect, zNear, zFar)
+
+        # Set the target matrix stack to the modelview matrix stack:
+        glMatrixMode(GL_MODELVIEW)
+
+        # Create the initial view using the initial eye position:
         self.update_view()
 
-        # Set focus to the window
-        self.setFocusPolicy(QtCore.Qt.StrongFocus)
-
-        
-    def keyPressEvent(self, event):
-        """ Defines callbacks for keypress events.
-
-        Implement override for virtual function provided by Qt base class for defining
-        keypress event callbacks, for example manipulating the primary view camera.
-
-        Args:
-            event (QKeyEvent): Screen width in pixels.
-            height (int): Screen height in pixels.
-
-        Returns:
-            (None)
-
-        """
-        if type(event) == QtGui.QKeyEvent:
-            if event.key() == QtCore.Qt.Key_W:
-                # Hold W to decrease radius (zoom in)
-                self.eye_r -= 0.5
-                self.update_view()
-                
-            elif event.key() == QtCore.Qt.Key_S:
-                # Hold S to increase radius (zoom out)
-                self.eye_r += 0.5
-                self.update_view()
-
-            elif event.key() == QtCore.Qt.Key_Down:
-                # Hold DOWNARROW to increase elevation angle 
-                self.eye_phi += 0.05
-                self.update_view()
-
-            elif event.key() == QtCore.Qt.Key_Up:
-                # Hold UPARROW to decrease elevation angle
-                self.eye_phi -= 0.05
-                self.update_view()
-
-            elif event.key() == QtCore.Qt.Key_Right:
-                # Hold RIGHTARROW to increase azimuth angle
-                self.eye_th += 0.05
-                self.update_view()
-
-            elif event.key() == QtCore.Qt.Key_Left:
-                # Hold LEFTARROW to decrease azimuth angle
-                self.eye_th -= 0.05
-                self.update_view()
-
-                
-    def update_view(self):
-        """ Updates the camera view using current camera state.
-
-        Function to be called after updating any camera state variable in order to update
-        the camera view. Converts spherical camera coordinates to a Cartesian position for
-        the eye of the camera, with the center position (focal point) fixed at the origin.
-
-        Args:
-            (None)
-
-        Returns:
-            (None)
-
-        """
-        self.eye_pos = np.array([self.eye_r*np.sin(self.eye_phi)*np.cos(self.eye_th),
-                                 self.eye_r*np.sin(self.eye_phi)*np.sin(self.eye_th),
-                                 self.eye_r*np.cos(self.eye_phi)])
-        up_vec = np.array([0.0, 0.0, 1.0])
-        gl.glLoadIdentity()
-        GLU.gluLookAt(*np.concatenate((self.eye_pos, self.center_pos, up_vec)))
-
-        
-    def resizeGL(self, width, height):
-        """ Defines behavior of OpenGL window when resized.
-
-        Virtual function provided by QGLWidget, called once at the beginning of application
-        to set up the OpenGL viewing volume and then called each time the window is resized
-        by the user.
-
-        Args:
-            width (int): Screen width in pixels.
-            height (int): Screen height in pixels.
-
-        Returns:
-            (None)
-
-        """
-        # Create the viewport, using the full window size
-        gl.glViewport(0, 0, width, height)
-        gl.glMatrixMode(gl.GL_PROJECTION)
-        gl.glLoadIdentity()
-        aspect = width / float(height)
-
-        # Define the viewing volume (frustrum)
-        GLU.gluPerspective(45.0, aspect, 1.0, 100.0)
-        gl.glMatrixMode(gl.GL_MODELVIEW)
-
-        
     def paintGL(self):
-        """ Defines behavior of OpenGL window when resized.
 
-        Virtual function provided by QGLWidget, called from QGLWidget method updateGL.
-        All user rendering code should be defined here.
+        # Clear depth and color buffers in preparations for new rendering:
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        Args:
-            (None)
-
-        Returns:
-            (None)
-
-        """
-        # Start from a blank slate each render by clearing buffers
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-        
         self.ground_graphics.render()
-        
-        self.origin_axes_graphics.render(np.identity(3), np.zeros(3))
+        self.robot_graphics.render(self.kin, self.graphics_options)
 
-        
+        # Draw the desired state using transparency:
+        self.graphics_options.set_use_alpha(True)
+        self.robot_graphics.render(self.kin_des, self.graphics_options)
+        self.graphics_options.set_use_alpha(False)
+
+        # glPushMatrix()
+        # self.renderText(0.0, 0.0, 0.0, 'text!')
+        # glPopMatrix()
+
     def initGeometry(self):
-        """ Initializes any geometry not encapsulated in a class. """
-
         pass
-    
+
+    def spin(self):
+        self.spin_time_prev = self.spin_time
+        self.spin_time = time.time()
+        self.dt = self.spin_time - self.spin_time_prev
+        self.sim_time += self.dt
+        self.fps = 1.0 / self.dt
+
+        # Compute joint trajectories:
+        # amp = 0.5
+        # freq = 0.1
+        # for i in range(self.robot.n_dofs):
+        #     self.robot_state.joint_state_des[i].th = amp*np.sin(2.0*np.pi*freq*self.sim_time)
+        #     self.robot_state.joint_state_des[i].thd = 2.0*np.pi*freq*amp*np.cos(2.0*np.pi*freq*self.sim_time)
+        #     self.robot_state.joint_state_des[i].thdd = -2.0*np.pi*freq*2.0*np.pi*freq*amp*np.sin(2.0*np.pi*freq*self.sim_time)
+
+        # Update kinematics from the current joint state:
+        self.kin.update(tf.HomogeneousTransform(),
+                        np.zeros(6),
+                        np.zeros(6),
+                        self.robot_state.joint_state,
+                        self.dt)
+
+        # Update desired kinematics:
+        self.kin_des.update(tf.HomogeneousTransform(),
+                            np.zeros(6),
+                            np.zeros(6),
+                            self.robot_state.joint_state_des,
+                            self.dt)
+
+        # Compute joint state from differential IK:
+        amp = 0.1
+        freq = 0.2
+        self.robot_state.joint_state_des = self.ik.update(self.kin_des,
+                                                          self.initial_endeff_pos +
+                                                          np.array([amp*np.cos(2.0*np.pi*freq*self.sim_time), 0.0, amp*np.sin(2.0*np.pi*freq*self.sim_time)]),
+                                                          self.initial_endeff_ori,
+                                                          np.array([-2.0*np.pi*freq*amp*np.sin(2.0*np.pi*freq*self.sim_time), 0.0, 2.0*np.pi*freq*amp*np.cos(2.0*np.pi*freq*self.sim_time)]),
+                                                          np.zeros(3),
+                                                          self.dt)
+
+        if self.controller_type == robot_defs.CONTROLLER_TYPE_PD:
+            # PD controller:
+            for i in range(self.robot.n_dofs):
+                self.robot_state.joint_state_des[i].u = 0.0*(
+                    self.robot_state.joint_state_des[i].th - self.robot_state.joint_state[i].th) + \
+                    0.0*(self.robot_state.joint_state_des[i].thd - self.robot_state.joint_state[i].thd)
+
+        elif self.controller_type == robot_defs.CONTROLLER_TYPE_GRAV_COMP_PD:
+            # Gravity Compensation + PD Controller:
+            tau_grav_comp = self.dyn.compute_grav_comp(self.robot_state.joint_state_des)
+            for i in range(self.robot.n_dofs):
+                self.robot_state.joint_state_des[i].u = tau_grav_comp[i] + 5000.0*(
+                    self.robot_state.joint_state_des[i].th - self.robot_state.joint_state[i].th) + \
+                    200.0*(self.robot_state.joint_state_des[i].thd - self.robot_state.joint_state[i].thd)
+
+        elif self.controller_type == robot_defs.CONTROLLER_TYPE_NONE:
+            for i in range(self.robot.n_dofs):
+                self.robot_state.joint_state_des[i].u = 0.0
+
+        else:
+            print('WARNING >> Invalid controller type.')
+            for i in range(self.robot.n_dofs):
+                self.robot_state.joint_state_des[i].u = 0.0
+
+        self.robot_state.joint_state = self.integrate_dynamics(self.robot_state.joint_state,
+                                                               self.robot_state.joint_state_des, self.dt)
+
+        self.parent.statusBar().showMessage('sim_freq: '+str(self.fps))
+
+        self.render_time = time.time()
+        if((self.render_time-self.render_time_prev) >= (1.0/self.render_freq)):
+            self.updateGL()
+            self.render_time_prev = self.render_time
+
+    def integrate_dynamics(self, joint_state, joint_state_des, dt):
+        """ Integrates the dynamics forward in joint space by dt. """
+
+        # Create a deep copy of the joint state to modify for integration:
+        jstate = copy.deepcopy(joint_state)
+
+        # Update the joint state by computing the joint-space dynamics and integrating:
+        if self.integrator_type == robot_defs.INTEGRATOR_TYPE_EULER:
+            qddot = self.dyn.compute_qddot(jstate, joint_state_des)
+            for i in range(self.robot.n_dofs):
+                jstate[i].thdd = qddot[i]
+                jstate[i].thd = joint_state[i].thd + self.dt*jstate[i].thdd
+                jstate[i].th = jstate[i].th + self.dt*jstate[i].thd
+
+        elif self.integrator_type == robot_defs.INTEGRATOR_TYPE_RK4:
+            k1 = np.zeros(2*self.robot.n_dofs)
+            k2 = np.zeros(2*self.robot.n_dofs)
+            k3 = np.zeros(2*self.robot.n_dofs)
+            k4 = np.zeros(2*self.robot.n_dofs)
+
+            # k1 = h * f(tn, yn):
+            k1[:self.robot.n_dofs] = dt * np.array([j.thd for j in jstate])
+            k1[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(jstate, joint_state_des)
+
+            # k2 = h * f(tn + h/2, yn + k1/2):
+            for i in range(self.robot.n_dofs):
+                jstate[i].th = joint_state[i].th + 0.5 * k1[i]
+                jstate[i].thd = joint_state[i].thd + 0.5 * k1[i+self.robot.n_dofs]
+            k2[:self.robot.n_dofs] = dt * np.array([j.thd for j in jstate])
+            k2[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(jstate, joint_state_des)
+
+            # k3 = h * f(tn + h/2, yn + k2/2):
+            for i in range(self.robot.n_dofs):
+                jstate[i].th = joint_state[i].th + 0.5 * k2[i]
+                jstate[i].thd = joint_state[i].thd + 0.5 * k2[i+self.robot.n_dofs]
+            k3[:self.robot.n_dofs] = dt * np.array([j.thd for j in jstate])
+            k3[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(jstate, joint_state_des)
+
+            # k4 = h * f(tn + h/2, yn + k3):
+            for i in range(self.robot.n_dofs):
+                jstate[i].th = joint_state[i].th + k3[i]
+                jstate[i].thd = joint_state[i].thd + k3[i+self.robot.n_dofs]
+            k4[:self.robot.n_dofs] = dt * np.array([j.thd for j in jstate])
+            k4[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(jstate, joint_state_des)
+
+            # Finally, compute the joint state from RK4 intermediate variables:
+            # y_{n+1} = y_{n} + (1/6)*(k1 + 2*k2 + 2*k3 + k4)
+            for i in range(self.robot.n_dofs):
+                jstate[i].th = joint_state[i].th + \
+                               (1.0 / 6.0) * (k1[i] + 2*k2[i] + 2*k3[i] + k4[i])
+                jstate[i].thd = joint_state[i].thd  + \
+                               (1.0 / 6.0) * (k1[i + self.robot.n_dofs] + 2*k2[i + self.robot.n_dofs] + \
+                                          2*k3[i + self.robot.n_dofs] + k4[i + self.robot.n_dofs])
+                jstate[i].thdd = (1.0 / dt) * k1[i + self.robot.n_dofs]
+
+        elif self.integrator_type == robot_defs.INTEGRATOR_TYPE_NONE:
+            pass  # returns the joint_state copy unmodified
+
+        return jstate
 
 class MainWindow(QtGui.QMainWindow):
-    """
-    This class defines the Qt main window for the application, to which we add Qt widgets for
-    OpenGL graphics, user input, etc.
-
-    """
 
     def __init__(self):
-        """ Initialize the Qt MainWindow.
+        QtGui.QMainWindow.__init__(self)
 
-        Initializes the Qt main window by setting up the window itself, creating the GLWidget,
-        adding GUI elements and creating a timed rendering loop.
+        self.resize(300, 300)
+        self.setWindowTitle('Robot Simulator')
 
-        Args:
-            (None)
-
-        Returns:
-           (None)
-
-        """
-        QtGui.QMainWindow.__init__(self)    # call the init for the parent class
-
-        # Set up the main window
-        self.resize(1200, 1200)
-        self.setWindowTitle('Python Robot Simulator')
-        # Create the Qt OpenGL widget and initialize GUI elements for MainWindow
+        self.initActions()
+        self.initMenus()
 
         self.glWidget = GLWidget(self)
-        self.initGUI()
 
-        # Create a timer and connect its signal to the QGLWidget update function
+        self.setCentralWidget(self.glWidget)
+        self.glWidget.setFocus()
+
+        # Create the dockable sliders widget:
+        self.slider_dock = QtGui.QDockWidget('Joint Torques', self)
+        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.slider_dock)
+
+        self.slider_multi_widget = QtGui.QWidget()
+        self.slider_layout = QtGui.QVBoxLayout()
+        self.slider_multi_widget.setLayout(self.slider_layout)
+
+        # Create the sliders and set their range:
+        self.joint_sliders = [QtGui.QSlider(QtCore.Qt.Horizontal)
+                              for i in range(self.glWidget.robot_state.robot.n_dofs)]
+        [self.joint_sliders[i].setRange(-100, 100) for i in range(self.glWidget.robot_state.robot.n_dofs)]
+
+        # # Set initial values based on current state and connect the sliders:
+        # [self.joint_sliders[i].setValue((200/(2*np.pi))*self.glWidget.robot_state.joint_state[i].th) for
+        #  i in range(self.glWidget.robot_state.robot.n_dofs)]
+        # [self.joint_sliders[i].valueChanged.connect(
+        #     lambda val, i=i: self.glWidget.robot_state.joint_state[i].set_th((2*np.pi/200) * val)) for
+        #  i in range(self.glWidget.robot_state.robot.n_dofs)]
+
+        # # Set initial values based on current state and connect the sliders:
+        # [self.joint_sliders[i].setValue((200/(2*np.pi))*self.glWidget.robot_state.joint_state_des[i].th) for
+        #  i in range(self.glWidget.robot_state.robot.n_dofs)]
+        # [self.joint_sliders[i].valueChanged.connect(
+        #     lambda val, i=i: self.glWidget.robot_state.joint_state_des[i].set_th((2*np.pi/200) * val)) for
+        #  i in range(self.glWidget.robot_state.robot.n_dofs)]
+
+        [self.slider_layout.addWidget(slider) for slider in self.joint_sliders]
+        self.slider_dock.setWidget(self.slider_multi_widget)
+
         timer = QtCore.QTimer(self)
-        timer.setInterval(20)   # period, in milliseconds
-        timer.timeout.connect(self.glWidget.updateGL)
+        timer.setInterval(1000.0*(1.0/self.glWidget.sim_freq))
+        QtCore.QObject.connect(timer, QtCore.SIGNAL('timeout()'), self.glWidget.spin)
         timer.start()
 
-        
-    def initGUI(self):
-        """ Initialize the Qt GUI elements for the main window.
+    def initActions(self):
+        self.exitAction = QtGui.QAction('Quit', self)
+        self.exitAction.setShortcut('Ctrl+Q')
+        self.exitAction.setStatusTip('Exit application')
+        self.connect(self.exitAction, QtCore.SIGNAL('triggered()'), self.close)
 
-        Initializes the Qt main window GUI elements.  Sets up a central widget with a vertical
-        layout and adds the GLWidget followed by user input elements (sliders).
+    def initMenus(self):
+        menuBar = self.menuBar()
+        fileMenu = menuBar.addMenu('&File')
+        fileMenu.addAction(self.exitAction)
 
-        Args:
-            (None)
+    def close(self):
+        QtGui.qApp.quit()
 
-        Returns:
-           (None)
 
-        """
-        # Create the central widget for the window and set its layout
-        central_widget = QtGui.QWidget()
-        gui_layout = QtGui.QVBoxLayout()
-        central_widget.setLayout(gui_layout)
-
-        self.setCentralWidget(central_widget)
-        
-        # Add the GLWidget to the layout
-        gui_layout.addWidget(self.glWidget)
-
-        
 if __name__ == '__main__':
-    # Run the Qt application
+
     app = QtGui.QApplication(sys.argv)
 
     win = MainWindow()

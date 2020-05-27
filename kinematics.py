@@ -8,7 +8,6 @@ import robot_defs
 
 
 class RobotParams(object):
-    """ Class for specifying generic robot parameters xDenavit-Hartenberg convention.
     def __init__(self):
 
         # # N-LINK PLANAR:
@@ -66,24 +65,7 @@ class RobotParams(object):
         self.link_inertia = [10.0*np.eye(3) for i in range(self.n_links)]
 
 class RobotState(object):
-    """ Class storing robot geometry and all joint states of the robot.
-
-    This class stores the state of the robot, which is considered to be arrays of the current and 
-    desired joint values and their derivatives, initialized from an input set of DH parameters 
-    which define the robot geometry.
-    
-    """
-    
     def __init__(self, robot_params):
-        """ Initialize the robot state from Denavit-Hartenberg (DH) parameters.
-
-        Constructor which initializes the robot state, storing the DH parameters and parsing the
-        joint state values into arrays of JointState type.
-        
-        Args:
-            robot_params (RobotParams): Set of DH parameters describing robot geometry.
-
-        """
         self.robot = robot_params
         self.joint_state = [JointState(self.robot.default_th[i], self.robot.dh_d[i])
                             for i in range(self.robot.n_dofs)]
@@ -92,24 +74,8 @@ class RobotState(object):
 
 
 class JointState(object):
-    """ Class storing the state of an individual robot joint.
-
-    Following the DH parameter system for describing robot geometry, this class stores the joint 
-    type (revolute or prismatic) as well as the value of each joint and its time derivatives. 
-
-    """
-    
     def __init__(self, th, d):
-        """ Constructor initializing an individual joint state.
 
-        Initializes the state of a single joint from passed revolute and prismatic joint values,
-        storing each and their derivatives as well as the joint actuation effort.
-        
-        Args:
-            th (float): Revolute joint value, in radians.
-            d (float): Prismatic joint value, in meters.
-
-        """
         # Joint is revolute by default.
         self.jtype = robot_defs.JTYPE_REVOLUTE
 
