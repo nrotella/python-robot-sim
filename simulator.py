@@ -58,7 +58,7 @@ class GLWidget(QtOpenGL.QGLWidget):
         self.kin_des = kin.Kinematics(self.robot)
         self.dyn = dyn.RecursiveNewtonEuler(self.robot, self.robot_state, self.kin)
 
-        self.integrator_type = robot_defs.INTEGRATOR_TYPE_EULER
+        self.integrator_type = robot_defs.INTEGRATOR_TYPE_NONE
 
         self.controller_type = robot_defs.CONTROLLER_TYPE_PD
 
@@ -268,6 +268,9 @@ class GLWidget(QtOpenGL.QGLWidget):
                                                           np.zeros(3),
                                                           self.dt)
 
+        # Update dynamics quantities before calling class methods:
+        self.dyn.update(self.robot_state.joint_state)
+        
         if self.controller_type == robot_defs.CONTROLLER_TYPE_PD:
             # PD controller:
             for i in range(self.robot.n_dofs):
@@ -283,6 +286,17 @@ class GLWidget(QtOpenGL.QGLWidget):
                     self.robot_state.joint_state_des[i].th - self.robot_state.joint_state[i].th) + \
                     200.0*(self.robot_state.joint_state_des[i].thd - self.robot_state.joint_state[i].thd)
 
+                
+        # Inverse dynamics (using qddot) + PD Controller:
+        elif self.controller_type == robot_defs.CONTROLLER_TYPE_INVDYN_PD:
+            tau_invdyn = self.dyn.compute_joint_torques(np.zeros(6),
+                                                        np.array([0.0, 0.0, 9.81, 0.0, 0.0, 0.0]),
+                                                        self.robot_state.joint_state_des)
+            for i in range(self.robot.n_dofs):
+                self.robot_state.joint_state_des[i].u = tau_invdyn [i] + 5000.0*(
+                    self.robot_state.joint_state_des[i].th - self.robot_state.joint_state[i].th) + \
+                    200.0*(self.robot_state.joint_state_des[i].thd - self.robot_state.joint_state[i].thd)
+
         elif self.controller_type == robot_defs.CONTROLLER_TYPE_NONE:
             for i in range(self.robot.n_dofs):
                 self.robot_state.joint_state_des[i].u = 0.0
@@ -291,6 +305,16 @@ class GLWidget(QtOpenGL.QGLWidget):
             print('WARNING >> Invalid controller type.')
             for i in range(self.robot.n_dofs):
                 self.robot_state.joint_state_des[i].u = 0.0
+
+        # Check for contacts with the ground and apply reaction forces if necessary:
+        for i, joint in enumerate(self.robot_state.joint_state):
+            if self.kin.h_tf[i].t()[2] < 0.0:
+                joint.fext = np.array([0.0,
+                                       0.0,
+                                       (robot_defs.FLOOR_STIFF*self.kin.h_tf[i].t()[2] +
+                                        -robot_defs.FLOOR_DAMP*self.kin.link_vel[i][2])])
+            else:
+                joint.fext = np.zeros(3)
 
         self.robot_state.joint_state = self.integrate_dynamics(self.robot_state.joint_state,
                                                                self.robot_state.joint_state_des, self.dt)
@@ -310,7 +334,7 @@ class GLWidget(QtOpenGL.QGLWidget):
 
         # Update the joint state by computing the joint-space dynamics and integrating:
         if self.integrator_type == robot_defs.INTEGRATOR_TYPE_EULER:
-            qddot = self.dyn.compute_qddot(jstate, joint_state_des)
+            qddot = self.dyn.compute_qddot(joint_state_des)
             for i in range(self.robot.n_dofs):
                 jstate[i].thdd = qddot[i]
                 jstate[i].thd = joint_state[i].thd + self.dt*jstate[i].thdd
@@ -324,28 +348,28 @@ class GLWidget(QtOpenGL.QGLWidget):
 
             # k1 = h * f(tn, yn):
             k1[:self.robot.n_dofs] = dt * np.array([j.thd for j in jstate])
-            k1[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(jstate, joint_state_des)
+            k1[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(joint_state_des)
 
             # k2 = h * f(tn + h/2, yn + k1/2):
             for i in range(self.robot.n_dofs):
                 jstate[i].th = joint_state[i].th + 0.5 * k1[i]
                 jstate[i].thd = joint_state[i].thd + 0.5 * k1[i+self.robot.n_dofs]
             k2[:self.robot.n_dofs] = dt * np.array([j.thd for j in jstate])
-            k2[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(jstate, joint_state_des)
+            k2[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(joint_state_des)
 
             # k3 = h * f(tn + h/2, yn + k2/2):
             for i in range(self.robot.n_dofs):
                 jstate[i].th = joint_state[i].th + 0.5 * k2[i]
                 jstate[i].thd = joint_state[i].thd + 0.5 * k2[i+self.robot.n_dofs]
             k3[:self.robot.n_dofs] = dt * np.array([j.thd for j in jstate])
-            k3[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(jstate, joint_state_des)
+            k3[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(joint_state_des)
 
             # k4 = h * f(tn + h/2, yn + k3):
             for i in range(self.robot.n_dofs):
                 jstate[i].th = joint_state[i].th + k3[i]
                 jstate[i].thd = joint_state[i].thd + k3[i+self.robot.n_dofs]
             k4[:self.robot.n_dofs] = dt * np.array([j.thd for j in jstate])
-            k4[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(jstate, joint_state_des)
+            k4[self.robot.n_dofs:] = dt * self.dyn.compute_qddot(joint_state_des)
 
             # Finally, compute the joint state from RK4 intermediate variables:
             # y_{n+1} = y_{n} + (1/6)*(k1 + 2*k2 + 2*k3 + k4)
@@ -379,7 +403,7 @@ class MainWindow(QtGui.QMainWindow):
         self.glWidget.setFocus()
 
         # Create the dockable sliders widget:
-        self.slider_dock = QtGui.QDockWidget('Joint Torques', self)
+        self.slider_dock = QtGui.QDockWidget('Joint Angles', self)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, self.slider_dock)
 
         self.slider_multi_widget = QtGui.QWidget()
@@ -391,12 +415,12 @@ class MainWindow(QtGui.QMainWindow):
                               for i in range(self.glWidget.robot_state.robot.n_dofs)]
         [self.joint_sliders[i].setRange(-100, 100) for i in range(self.glWidget.robot_state.robot.n_dofs)]
 
-        # # Set initial values based on current state and connect the sliders:
-        # [self.joint_sliders[i].setValue((200/(2*np.pi))*self.glWidget.robot_state.joint_state[i].th) for
-        #  i in range(self.glWidget.robot_state.robot.n_dofs)]
-        # [self.joint_sliders[i].valueChanged.connect(
-        #     lambda val, i=i: self.glWidget.robot_state.joint_state[i].set_th((2*np.pi/200) * val)) for
-        #  i in range(self.glWidget.robot_state.robot.n_dofs)]
+        # Set initial values based on current state and connect the sliders:
+        [self.joint_sliders[i].setValue((200/(2*np.pi))*self.glWidget.robot_state.joint_state[i].th) for
+         i in range(self.glWidget.robot_state.robot.n_dofs)]
+        [self.joint_sliders[i].valueChanged.connect(
+            lambda val, i=i: self.glWidget.robot_state.joint_state[i].set_th((2*np.pi/200) * val)) for
+         i in range(self.glWidget.robot_state.robot.n_dofs)]
 
         # # Set initial values based on current state and connect the sliders:
         # [self.joint_sliders[i].setValue((200/(2*np.pi))*self.glWidget.robot_state.joint_state_des[i].th) for

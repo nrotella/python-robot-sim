@@ -89,6 +89,8 @@ class JointState(object):
 
         self.u = 0.0
 
+        self.fext = np.zeros(3)
+        
     def set_th(self, val):
         """ Set the joint angle. Needed for lambda functions. """
         self.th = val
